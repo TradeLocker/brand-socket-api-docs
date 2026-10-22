@@ -723,6 +723,7 @@ components:
             - STATUS_CANCELED
             - STATUS_REFUSED
             - STATUS_RESTATED
+            - EXEC_TYPE_ACTIVATED
             - STATUS_WAITING_MARKET
             - STATUS_OFF_MARKET
             - STATUS_UNPLACED
@@ -730,7 +731,7 @@ components:
             - STATUS_MODIFY_TRADING_MODE
         orderType:
           type: string
-          enum: [MARKET, STOP, LIMIT, STOP_LIMIT, TRAILING_STOP]
+          enum: [MANUAL, MARKET, STOP, LIMIT, STOP_LIMIT, TRAILING_STOP]
         tif:
           type: string
           description: Time in force.
