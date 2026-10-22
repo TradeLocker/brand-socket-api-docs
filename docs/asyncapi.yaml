@@ -57,9 +57,10 @@ info:
 
     ## Rules that save you a support ticket
 
-    - **One connection per API key and type.** A new connection with the same key replaces the
-      old one, which receives `disconnected` ("Replaced by new connection with the same API key.").
-      Two processes sharing a key keep kicking each other out. Use one consumer, or one key per consumer.
+    - **One connection per API key.** A new connection with the same key can replace the old one,
+      which then receives `disconnected` ("Replaced by new connection with the same API key.").
+      This holds across account types: a `LIVE` and a `DEMO` connection with the same key compete,
+      so use a separate API key for each type you stream. Never share a key between processes.
     - **Connect with a `type` your brand has.** A brand is set up for `LIVE`, `DEMO` or both.
       Connecting with a type it does not have is refused with `badRequest`.
     - **Back off.** At most 10 connection attempts per 2 minutes per brand and type; above that the

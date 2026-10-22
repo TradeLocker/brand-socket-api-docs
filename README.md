@@ -37,7 +37,8 @@ socket.on('stream', (message) => console.log('stream', message));       // snaps
 
 ## Before you write code
 
-1. **One connection per API key and type.** A second connection with the same key replaces the first.
+1. **One connection per API key.** A second connection with the same key can replace the first, also
+   across types: use a separate API key for `LIVE` and for `DEMO`, and never share a key between processes.
 2. **Connect with a `type` your brand is set up for**, or the handshake is refused with `badRequest`.
 3. **Back off.** More than 10 connection attempts in 2 minutes are refused with `conflict.*`.
 4. **Reconnect yourself after a server-side close** (`shutdown`, `connectionError`): Socket.IO does not.
