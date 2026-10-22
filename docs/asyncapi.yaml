@@ -1,0 +1,830 @@
+asyncapi: 3.0.0
+id: urn:com:tradelocker:brand-socket
+defaultContentType: application/json
+
+info:
+  title: TradeLocker Brand Socket API
+  version: 1.3.0
+  description: |
+    Real-time updates for every account of your brand over [Socket.IO](https://socket.io/):
+    account status (balance, equity, margin, per-position PnL), positions, closed positions and
+    orders, plus instrument quotes on request.
+
+    One connection carries all accounts of your brand for one account type (`LIVE` or `DEMO`).
+    You authenticate with your **brand API key**; there is nothing to subscribe per account.
+
+    ## Quick start
+
+    1. **Connect.** Socket.IO v4 client, namespace `/brand-socket`, path `/brand-api/socket.io`,
+       transport `websocket`, header `brand-api-key: <your key>`, query `type=LIVE` or `type=DEMO`.
+    2. **Wait for `connection`** with `{"status":"ok","code":"connected"}`. Any `status: error`
+       means the handshake was refused and the server closes the socket (see the `connection` channel).
+    3. **Read the `stream` event.** You first get a snapshot of every account (`AccountStatus`,
+       `Position`, `OpenOrder`), then `Property` `SyncEnd`, then live updates.
+    4. **Quotes (optional).** Emit `subscriptions` with `{"action":"SUBSCRIBE","instrument":"EURUSD"}`;
+       quotes arrive on the `subscriptions` event.
+
+    ```js
+    import { io } from 'socket.io-client';
+
+    const socket = io('https://api.tradelocker.com/brand-socket', {
+      path: '/brand-api/socket.io',
+      transports: ['websocket'],
+      query: { type: 'LIVE' },
+      extraHeaders: { 'brand-api-key': process.env.BRAND_API_KEY },
+    });
+
+    socket.on('connection', (status) => console.log('connection', status)); // {status, code, message}
+    socket.on('stream', (message) => console.log('stream', message));       // {type, ...}
+    socket.on('subscriptions', (quote) => console.log('quote', quote));     // {type: 'Quote', ...}
+    socket.on('disconnect', (reason) => console.log('disconnect', reason));
+    ```
+
+    `extraHeaders` is honoured by Socket.IO clients for Node.js, Python, Java and .NET. Browsers
+    cannot set headers on a WebSocket, so connect from your backend.
+
+    ## Connection settings
+
+    | Setting | Value |
+    |---|---|
+    | Protocol | Socket.IO v4 (Engine.IO 4) |
+    | Namespace | `/brand-socket` |
+    | Handshake path | `/brand-api/socket.io` |
+    | Transport | `websocket` only (no HTTP long-polling) |
+    | Auth | header `brand-api-key` on the handshake; the key's scope must be `FULL_ACCESS` or `SOCKET` |
+    | Account type | query parameter `type`: `LIVE` or `DEMO` |
+    | Server ping | every 25 s, connection closed after 20 s without a pong |
+
+    ## Rules that save you a support ticket
+
+    - **One connection per API key and type.** A new connection with the same key replaces the
+      old one, which receives `disconnected` ("Replaced by new connection with the same API key.").
+      Two processes sharing a key keep kicking each other out. Use one consumer, or one key per consumer.
+    - **Connect with a `type` your brand has.** A brand is set up for `LIVE`, `DEMO` or both.
+      Connecting with a type it does not have is refused with `badRequest`.
+    - **Back off.** At most 10 connection attempts per 2 minutes per brand and type; above that the
+      handshake is refused with `conflict.<environment>-<type>-<brand>`. Do not reconnect in a tight
+      loop on any error code.
+    - **Reconnect after a server-side close.** Socket.IO clients retry on their own after network
+      errors and ping timeouts, but not when the server closed the connection (`io server disconnect`).
+      On `shutdown` (a deploy) and `connectionError` (the trading session ended), reconnect yourself
+      with a short delay. On the handshake errors (`badRequest*`, `forbidden*`, `unauthorized*`),
+      fix the cause before trying again.
+    - **Every connection starts with a full snapshot.** After a reconnect, rebuild your state from the
+      new snapshot up to `SyncEnd` instead of merging it into the old one.
+    - **Numbers are decimal strings** (`"10628.95"`). Parse them with a decimal type, not a float.
+      IDs are strings too: position and order IDs exceed 2^53.
+    - **Fields with no value are omitted**, not sent as `null`. An `AccountStatus` update can omit
+      figures it does not carry: keep the last value you received for that account.
+    - **Ignore message types and fields you do not know.** New ones can be added without notice.
+  contact:
+    name: TradeLocker Brand Socket docs
+    url: https://github.com/TradeLocker/brand-socket-api-docs
+  externalDocs:
+    description: TradeLocker Brand REST API
+    url: https://brand-docs.tradelocker.com/
+  tags:
+    - name: brand-socket
+      description: Socket.IO events of the Brand Socket API.
+
+servers:
+  production:
+    host: api.tradelocker.com
+    pathname: /brand-socket
+    protocol: wss
+    title: Production
+    summary: Production Brand Socket.
+    description: |
+      Socket.IO URL `https://api.tradelocker.com/brand-socket` with path `/brand-api/socket.io`.
+      TradeLocker may give your brand a dedicated hostname; the contract is the same.
+    security:
+      - $ref: '#/components/securitySchemes/brandApiKey'
+    tags:
+      - name: env:production
+  development:
+    host: api-dev.tradelocker.com
+    pathname: /brand-socket
+    protocol: wss
+    title: Development
+    summary: Development Brand Socket, for development brand API keys.
+    description: |
+      Socket.IO URL `https://api-dev.tradelocker.com/brand-socket` with path `/brand-api/socket.io`.
+    security:
+      - $ref: '#/components/securitySchemes/brandApiKey'
+    tags:
+      - name: env:development
+  development-direct:
+    host: brand-socket-api-dev-1.tradelocker.com
+    pathname: /brand-socket
+    protocol: wss
+    title: Development (direct)
+    summary: Same development service, reached without an HTTP proxy in front.
+    description: |
+      Socket.IO URL `https://brand-socket-api-dev-1.tradelocker.com/brand-socket` with path
+      `/brand-api/socket.io`. Same keys and behaviour as `development`.
+    security:
+      - $ref: '#/components/securitySchemes/brandApiKey'
+    tags:
+      - name: env:development
+
+channels:
+  connection:
+    address: connection
+    title: connection
+    summary: Handshake result and connection-level status.
+    description: |
+      Socket.IO event `connection`, sent by the server. Every payload is
+      `{"status":"ok"|"error","code":"...","message":"..."}`; branch on `code`, show `message`.
+
+      **After the handshake**
+
+      | status | code | Meaning | What to do |
+      |---|---|---|---|
+      | ok | `connected` | Key accepted, the snapshot follows on `stream`. | |
+      | error | `badRequest.invalidAccountType` | `type` is missing or not `LIVE`/`DEMO`. | Fix the query. |
+      | error | `badRequest.invalidApiKey` | The `brand-api-key` header is missing or empty. | Send the header. |
+      | error | `forbidden.brand-not-found` | No brand has this API key. | Check the key and the environment (development keys do not work in production). |
+      | error | `forbidden.brandToken.cannotEstablishConnectionUsingRestrictedApiKey` | The key's scope does not allow the socket. | Use a key with scope `FULL_ACCESS` or `SOCKET`. |
+      | error | `unauthorized.brandSocketDisabled` | The Brand Socket is not enabled for your brand, or the brand is not active. | Ask TradeLocker to enable it. |
+      | error | `badRequest` | Your brand has no setup for this `type`. | Connect with the other type, or ask TradeLocker. |
+      | error | `conflict.<environment>-<type>-<brand>` | Too many connection attempts (10 per 2 minutes). | Wait, then reconnect with backoff. |
+      | error | `internalServer.pfix_conn_fail_<brand>_<type>` | The trading session for your brand could not be opened. | Retry with backoff; contact TradeLocker if it persists. |
+      | error | `internalServer.externalHttpRequest.failed.<httpStatus>` | An internal service answered with an error. | Retry with backoff. |
+      | error | `unknown` | Unexpected server error. | Retry with backoff. |
+
+      On every handshake error the server closes the socket.
+
+      **During the connection**
+
+      | status | code | Meaning | What to do |
+      |---|---|---|---|
+      | ok | `disconnected` | Replaced by a newer connection with the same API key, or closed by TradeLocker. | Do not reconnect automatically: another consumer is using your key. |
+      | ok | `shutdown` | The service is restarting (deploy). | Reconnect after a short delay. |
+      | error | `connectionError` | The trading session behind the socket ended. | Reconnect with backoff. |
+
+      **In reply to `subscriptions`** (the socket stays connected)
+
+      | status | code | Meaning |
+      |---|---|---|
+      | error | `validation.badRequest` | The payload is invalid; `message` lists every problem. |
+      | error | `notFound` | No such instrument for your brand. |
+      | error | `notImplemented` | Quotes are not available in your brand's environment. |
+      | error | `unknown` | Unexpected error handling the request. |
+    servers:
+      - $ref: '#/servers/production'
+      - $ref: '#/servers/development'
+      - $ref: '#/servers/development-direct'
+    messages:
+      ConnectionStatus:
+        $ref: '#/components/messages/ConnectionStatus'
+    bindings:
+      ws:
+        method: GET
+        headers:
+          type: object
+          required: [brand-api-key]
+          properties:
+            brand-api-key:
+              type: string
+              description: Your brand API key, scope `FULL_ACCESS` or `SOCKET`.
+        query:
+          type: object
+          required: [type]
+          properties:
+            type:
+              type: string
+              enum: [LIVE, DEMO]
+              description: Account type to stream. Your brand must be set up for it.
+        bindingVersion: 0.1.0
+
+  stream:
+    address: stream
+    title: stream
+    summary: Snapshot and live updates for every account of your brand.
+    description: |
+      Socket.IO event `stream`, sent by the server. One event carries one message; the `type` field
+      says which.
+
+      After `connected`:
+      1. snapshot: `AccountStatus`, `Position` and `OpenOrder` messages for every account of your
+         brand and the connected type;
+      2. `Property` with `name: SyncEnd`;
+      3. live updates, in the order the trading engine produced them.
+
+      Updates for canceled and refused orders are not sent.
+    servers:
+      - $ref: '#/servers/production'
+      - $ref: '#/servers/development'
+      - $ref: '#/servers/development-direct'
+    messages:
+      AccountStatus:
+        $ref: '#/components/messages/AccountStatus'
+      Position:
+        $ref: '#/components/messages/Position'
+      ClosePosition:
+        $ref: '#/components/messages/ClosePosition'
+      OpenOrder:
+        $ref: '#/components/messages/OpenOrder'
+      Property:
+        $ref: '#/components/messages/Property'
+
+  subscriptions:
+    address: subscriptions
+    title: subscriptions
+    summary: Quote subscriptions (client to server) and quotes (server to client).
+    description: |
+      Socket.IO event `subscriptions`, used in both directions:
+
+      - **you emit** `{"action":"SUBSCRIBE"|"UNSUBSCRIBE","instrument":"<name>"}`, no acknowledgement
+        callback. Success is silent; a failure arrives on the `connection` event and the socket stays
+        connected. A request sent before `SyncEnd` is answered once the snapshot is complete.
+      - **the server emits** a `Quote` for every price change of each subscribed instrument.
+    servers:
+      - $ref: '#/servers/production'
+      - $ref: '#/servers/development'
+      - $ref: '#/servers/development-direct'
+    messages:
+      SubscribeQuotes:
+        $ref: '#/components/messages/SubscribeQuotes'
+      UnsubscribeQuotes:
+        $ref: '#/components/messages/UnsubscribeQuotes'
+      Quote:
+        $ref: '#/components/messages/Quote'
+
+operations:
+  receiveConnectionStatus:
+    action: receive
+    title: Receive connection status
+    channel:
+      $ref: '#/channels/connection'
+    tags:
+      - name: brand-socket
+
+  receiveStream:
+    action: receive
+    title: Receive account updates
+    channel:
+      $ref: '#/channels/stream'
+    tags:
+      - name: brand-socket
+
+  subscribeQuotes:
+    action: send
+    title: Subscribe or unsubscribe instrument quotes
+    summary: Emit `subscriptions`; failures come back on `connection`.
+    description: |
+      The payload takes exactly `action` and `instrument`. Any other property, an unknown action
+      or a missing instrument is answered with `validation.badRequest`, whose `message` joins every
+      problem with commas, for example
+      `property foo should not exist,instrument must be a string`.
+    channel:
+      $ref: '#/channels/subscriptions'
+    messages:
+      - $ref: '#/channels/subscriptions/messages/SubscribeQuotes'
+      - $ref: '#/channels/subscriptions/messages/UnsubscribeQuotes'
+    tags:
+      - name: brand-socket
+
+  receiveQuotes:
+    action: receive
+    title: Receive quotes
+    channel:
+      $ref: '#/channels/subscriptions'
+    messages:
+      - $ref: '#/channels/subscriptions/messages/Quote'
+    tags:
+      - name: brand-socket
+
+components:
+  securitySchemes:
+    brandApiKey:
+      type: httpApiKey
+      name: brand-api-key
+      in: header
+      description: |
+        Brand API key issued by TradeLocker, sent as a header on the Socket.IO handshake. Its scope
+        must be `FULL_ACCESS` or `SOCKET`. Development and production keys are separate.
+
+  messages:
+    ConnectionStatus:
+      name: ConnectionStatus
+      title: Connection status
+      summary: Handshake result, connection-level events and `subscriptions` errors.
+      payload:
+        $ref: '#/components/schemas/ConnectionStatus'
+      examples:
+        - name: connected
+          payload: { status: ok, code: connected, message: Connected successfully. }
+        - name: replaced
+          payload:
+            status: ok
+            code: disconnected
+            message: Replaced by new connection with the same API key.
+        - name: shutdown
+          payload:
+            status: ok
+            code: shutdown
+            message: Brand Socket Service shutting down, disconnecting.
+        - name: invalidAccountType
+          payload:
+            status: error
+            code: badRequest.invalidAccountType
+            message: "Invalid account type provided: 'undefined'. Type must be one of 'LIVE' or 'DEMO'."
+        - name: invalidApiKey
+          payload:
+            status: error
+            code: badRequest.invalidApiKey
+            message: "Invalid API key provided, make sure header 'brand-api-key' is valid."
+        - name: brandNotFound
+          payload: { status: error, code: forbidden.brand-not-found, message: Brand not found }
+        - name: restrictedApiKey
+          payload:
+            status: error
+            code: forbidden.brandToken.cannotEstablishConnectionUsingRestrictedApiKey
+            message: Not allowed to establish socket connection using READONLY api key
+        - name: brandSocketDisabled
+          payload:
+            status: error
+            code: unauthorized.brandSocketDisabled
+            message: "Brand 'ACME' is not allowed to connect to the socket."
+        - name: noSetupForType
+          payload:
+            status: error
+            code: badRequest
+            message: Cannot find environment DEMO for brand ACME
+        - name: rateLimited
+          payload:
+            status: error
+            code: conflict.bsa-LIVE-ACME
+            message: "Brand 'ACME' connection is rate limited. Default limit is 10 connection requests per 120000 ms."
+        - name: tradingSessionFailed
+          payload:
+            status: error
+            code: internalServer.pfix_conn_fail_ACME_LIVE
+            message: Connecting to PFIX failed. ACME_LIVE
+        - name: connectionError
+          payload: { status: error, code: connectionError, message: unknown }
+        - name: subscriptionInvalid
+          payload:
+            status: error
+            code: validation.badRequest
+            message: 'action must be one of the following values: SUBSCRIBE, UNSUBSCRIBE'
+        - name: subscriptionNotFound
+          payload:
+            status: error
+            code: notFound
+            message: Instrument FOOBAR not found for brand ACME
+
+    AccountStatus:
+      name: AccountStatus
+      title: AccountStatus
+      summary: Balance, equity, margin and per-position PnL of one account.
+      payload:
+        $ref: '#/components/schemas/AccountStatus'
+      examples:
+        - name: accountStatus
+          payload:
+            type: AccountStatus
+            accountId: L#706984
+            userGroupId: '12345'
+            currency: USD
+            balance: '9888.95'
+            balanceWithoutCredit: '9888.95'
+            equity: '10628.95'
+            marginAvailable: '3583.45'
+            marginUsed: '6305.5'
+            blockedBalance: '0'
+            credit: '0'
+            positionPnLs:
+              - { positionId: '144115188076017329', pnl: '150.50' }
+              - { positionId: '144115188076017330', pnl: '-75.25' }
+
+    Position:
+      name: Position
+      title: Position
+      summary: An open position, sent in the snapshot and whenever it changes.
+      payload:
+        $ref: '#/components/schemas/Position'
+      examples:
+        - name: position
+          payload:
+            type: Position
+            accountId: L#617509
+            positionId: '144115188076017329'
+            lots: '0.01'
+            lotSize: '10'
+            units: '0.1'
+            instrument: ETHUSD
+            openPrice: '3299.71'
+            openDateTime: '2024-03-19T20:15:51.465Z'
+            openOrderId: '144115188076017329'
+            stopLossLimit: '0'
+            maintMargin: '3.06485'
+            takeProfitLimit: '0'
+            side: BUY
+            fee: '0'
+            swaps: '0'
+
+    ClosePosition:
+      name: ClosePosition
+      title: ClosePosition
+      summary: A position was closed.
+      payload:
+        $ref: '#/components/schemas/ClosePosition'
+      examples:
+        - name: closePosition
+          payload:
+            type: ClosePosition
+            accountId: L#775077
+            positionId: '144115188076313663'
+            closePrice: '0.62947'
+            closeDateTime: '2025-01-27T13:43:53.987Z'
+
+    OpenOrder:
+      name: OpenOrder
+      title: OpenOrder
+      summary: A new or updated order.
+      payload:
+        $ref: '#/components/schemas/OpenOrder'
+      examples:
+        - name: filledMarketOrder
+          payload:
+            type: OpenOrder
+            accountId: L#706984
+            orderId: '144115188077153593'
+            instrument: AUDUSD
+            amount: '10'
+            lotSize: '100000'
+            side: BUY
+            price: '0.62956'
+            status: STATUS_FILLED
+            orderType: MARKET
+            tif: IOC
+            filledAmount: '10'
+            averageFilledPrice: '0.62962'
+            trStopOffset: '0'
+            positionId: '144115188076313665'
+            isOpen: true
+            createdDateTime: '2025-01-27T13:43:57.327Z'
+            lastUpdate: '2025-01-27T13:43:57.532Z'
+
+    Property:
+      name: Property
+      title: Property
+      summary: Lifecycle marker. `SyncEnd` ends the initial snapshot.
+      payload:
+        $ref: '#/components/schemas/Property'
+      examples:
+        - name: syncEnd
+          payload: { type: Property, name: SyncEnd }
+
+    SubscribeQuotes:
+      name: SubscribeQuotes
+      title: SUBSCRIBE
+      summary: Start receiving quotes for an instrument.
+      payload:
+        $ref: '#/components/schemas/QuoteSubscription'
+      examples:
+        - name: subscribe
+          payload: { action: SUBSCRIBE, instrument: EURUSD }
+
+    UnsubscribeQuotes:
+      name: UnsubscribeQuotes
+      title: UNSUBSCRIBE
+      summary: Stop receiving quotes for an instrument.
+      payload:
+        $ref: '#/components/schemas/QuoteSubscription'
+      examples:
+        - name: unsubscribe
+          payload: { action: UNSUBSCRIBE, instrument: EURUSD }
+
+    Quote:
+      name: Quote
+      title: Quote
+      summary: Bid and ask of a subscribed instrument.
+      payload:
+        $ref: '#/components/schemas/Quote'
+      examples:
+        - name: quote
+          payload:
+            type: Quote
+            instrument: EURUSD
+            routeId: '620892'
+            timestamp: '2025-03-19T18:12:52.584Z'
+            bid: '1.08919'
+            ask: '1.08921'
+
+  schemas:
+    Decimal:
+      type: string
+      description: Decimal number as a string. Parse with a decimal type.
+      examples: ['10628.95']
+
+    Id:
+      type: string
+      description: Numeric identifier as a string; values exceed 2^53.
+      examples: ['144115188076017329']
+
+    AccountId:
+      type: string
+      description: Account identifier, `L#<number>` for live and `D#<number>` for demo accounts.
+      examples: ['L#706984']
+
+    Timestamp:
+      type: string
+      format: date-time
+      description: ISO-8601 UTC timestamp.
+      examples: ['2025-01-27T13:43:57.532Z']
+
+    Side:
+      type: string
+      enum: [BUY, SELL]
+
+    ConnectionStatus:
+      type: object
+      required: [status, code, message]
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+        code:
+          type: string
+          description: Machine-readable result; see the `connection` channel for every value.
+        message:
+          type: string
+          description: Human-readable detail. Do not parse it.
+
+    AccountStatus:
+      type: object
+      required: [type, accountId, userGroupId, currency, positionPnLs]
+      properties:
+        type:
+          type: string
+          const: AccountStatus
+        accountId:
+          $ref: '#/components/schemas/AccountId'
+        userGroupId:
+          type: string
+          description: Group the account belongs to.
+        currency:
+          type: string
+          description: Account currency.
+          examples: [USD]
+        balance:
+          $ref: '#/components/schemas/Decimal'
+        balanceWithoutCredit:
+          $ref: '#/components/schemas/Decimal'
+        equity:
+          $ref: '#/components/schemas/Decimal'
+        marginAvailable:
+          $ref: '#/components/schemas/Decimal'
+        marginUsed:
+          $ref: '#/components/schemas/Decimal'
+        blockedBalance:
+          $ref: '#/components/schemas/Decimal'
+        credit:
+          $ref: '#/components/schemas/Decimal'
+        positionPnLs:
+          type: array
+          description: Gross profit and loss of every open position; empty when there is none.
+          items:
+            type: object
+            required: [positionId, pnl]
+            properties:
+              positionId:
+                $ref: '#/components/schemas/Id'
+              pnl:
+                $ref: '#/components/schemas/Decimal'
+
+    Position:
+      type: object
+      required: [type, accountId, positionId, instrument, side, lots, openPrice, openDateTime]
+      properties:
+        type:
+          type: string
+          const: Position
+        accountId:
+          $ref: '#/components/schemas/AccountId'
+        positionId:
+          $ref: '#/components/schemas/Id'
+        lots:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Position size in lots.
+        lotSize:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Units per lot.
+        units:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Position size in units.
+        instrument:
+          type: string
+          examples: [EURUSD]
+        openPrice:
+          $ref: '#/components/schemas/Decimal'
+        openDateTime:
+          $ref: '#/components/schemas/Timestamp'
+        openOrderId:
+          allOf:
+            - $ref: '#/components/schemas/Id'
+          description: Order that opened the position, when known.
+        stopLossOrderId:
+          allOf:
+            - $ref: '#/components/schemas/Id'
+          description: Attached stop-loss order; omitted when there is none.
+        stopLossLimit:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Stop-loss price, `0` when not set.
+        maintMargin:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Maintenance margin held for the position.
+        takeProfitOrderId:
+          allOf:
+            - $ref: '#/components/schemas/Id'
+          description: Attached take-profit order; omitted when there is none.
+        takeProfitLimit:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Take-profit price, `0` when not set.
+        side:
+          $ref: '#/components/schemas/Side'
+        fee:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Commission charged on the position.
+        swaps:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Swap charged on the position.
+
+    ClosePosition:
+      type: object
+      required: [type, accountId, positionId, closeDateTime]
+      properties:
+        type:
+          type: string
+          const: ClosePosition
+        accountId:
+          $ref: '#/components/schemas/AccountId'
+        positionId:
+          $ref: '#/components/schemas/Id'
+        closePrice:
+          $ref: '#/components/schemas/Decimal'
+        closeDateTime:
+          $ref: '#/components/schemas/Timestamp'
+
+    OpenOrder:
+      type: object
+      required: [type, accountId, orderId, instrument, side, orderType, status, amount]
+      properties:
+        type:
+          type: string
+          const: OpenOrder
+        accountId:
+          $ref: '#/components/schemas/AccountId'
+        orderId:
+          $ref: '#/components/schemas/Id'
+        instrument:
+          type: string
+          examples: [EURUSD]
+        amount:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Order size in lots.
+        lotSize:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Units per lot.
+        side:
+          $ref: '#/components/schemas/Side'
+        price:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Order price.
+        status:
+          type: string
+          enum:
+            - STATUS_NONE
+            - STATUS_PENDING_NEW
+            - STATUS_PENDING_EXECUTION
+            - STATUS_PENDING_CANCEL
+            - STATUS_PENDING_REPLACE
+            - STATUS_PENDING_REPLACE_NOT_ACTIVE
+            - STATUS_NEW
+            - STATUS_ACCEPTED
+            - STATUS_REPLACED
+            - STATUS_PART_FILLED
+            - STATUS_FILLED
+            - STATUS_CANCELED
+            - STATUS_REFUSED
+            - STATUS_RESTATED
+            - STATUS_WAITING_MARKET
+            - STATUS_OFF_MARKET
+            - STATUS_UNPLACED
+            - STATUS_REMOVED
+            - STATUS_MODIFY_TRADING_MODE
+        orderType:
+          type: string
+          enum: [MARKET, STOP, LIMIT, STOP_LIMIT, TRAILING_STOP]
+        tif:
+          type: string
+          description: Time in force.
+          enum: [DAY, GTC, IOC, GTD, FOK]
+        filledAmount:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Lots filled so far.
+        averageFilledPrice:
+          $ref: '#/components/schemas/Decimal'
+        stopPrice:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Trigger price of stop and stop-limit orders.
+        slPrice:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Stop loss to attach to the resulting position.
+        slPriceType:
+          $ref: '#/components/schemas/ProtectionPriceType'
+        slLimitPrice:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Limit price of a stop-limit stop loss.
+        tpPrice:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Take profit to attach to the resulting position.
+        tpPriceType:
+          $ref: '#/components/schemas/ProtectionPriceType'
+        trStopOffset:
+          allOf:
+            - $ref: '#/components/schemas/Decimal'
+          description: Trailing stop offset, `0` when not used.
+        positionId:
+          allOf:
+            - $ref: '#/components/schemas/Id'
+          description: Position the order opened or closes, once known.
+        isOpen:
+          type: boolean
+        createdDateTime:
+          $ref: '#/components/schemas/Timestamp'
+        lastUpdate:
+          $ref: '#/components/schemas/Timestamp'
+        expireDateTime:
+          allOf:
+            - $ref: '#/components/schemas/Timestamp'
+          description: Expiry of a GTD order.
+
+    ProtectionPriceType:
+      type: string
+      description: How `slPrice` / `tpPrice` is expressed.
+      enum: [ABSOLUTE, OFFSET, TRAILING_STOP_OFFSET]
+
+    Property:
+      type: object
+      required: [type, name]
+      properties:
+        type:
+          type: string
+          const: Property
+        name:
+          type: string
+          description: '`SyncEnd`: the snapshot is complete; everything after it is a live update.'
+          enum: [SyncEnd]
+
+    QuoteSubscription:
+      type: object
+      additionalProperties: false
+      required: [action, instrument]
+      properties:
+        action:
+          type: string
+          enum: [SUBSCRIBE, UNSUBSCRIBE]
+        instrument:
+          type: string
+          description: Instrument name as your brand lists it.
+          examples: [EURUSD]
+
+    Quote:
+      type: object
+      required: [type, instrument, routeId, timestamp, bid, ask]
+      properties:
+        type:
+          type: string
+          const: Quote
+        instrument:
+          type: string
+          examples: [EURUSD]
+        routeId:
+          type: string
+          description: Route the price comes from.
+        timestamp:
+          $ref: '#/components/schemas/Timestamp'
+        bid:
+          $ref: '#/components/schemas/Decimal'
+        ask:
+          $ref: '#/components/schemas/Decimal'
