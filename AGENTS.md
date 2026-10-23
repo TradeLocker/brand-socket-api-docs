@@ -66,6 +66,13 @@ is how support finds your client among the others.
   after 10 s (status reason `slow_consumer` on TradeLocker's side; you see a close without a status
   or a ping timeout, depending on the proxy in front). It may reconnect for a fresh snapshot, so
   back-pressure your own pipeline instead of the socket.
+- **Measure your snapshot time.** The reference clients print `SyncEnd after N s`. Against the
+  development brand (5,575 accounts, ~7,000 messages) Node.js and Python take well under a second
+  when the per-message handler is cheap. Two traps seen while writing them: in python-socketio,
+  registering the `stream` handler as a coroutine (`async def`) schedules a task per message and
+  took the same snapshot from 0.7 s to over 15 s, so use a plain `def` for the hot handler and keep
+  coroutines for the rare events; in any language, do not log or persist per message inside the
+  handler, hand the message to a queue.
 - `SyncEnd` is the moment your state is complete. Compute aggregates, start risk checks and send
   quote subscriptions from there (subscriptions sent before it are parked and answered after it).
 - Expect a reconnect every so often even without a deploy (node maintenance). Your state machine
@@ -144,9 +151,13 @@ is how support finds your client among the others.
   20 s without a pong; a corporate proxy that cuts idle TCP at 60 s will look like random drops.
 - Expect `shutdown` a few times a week (releases roll pods one by one; every client reconnects once
   onto the new pod). Dev restarts more often than production.
-- Development hosts: `https://api-dev.tradelocker.com` (shared edge) and
-  `https://brand-socket-api-dev-1.tradelocker.com` (direct). Production: `https://api.tradelocker.com`,
-  or the dedicated hostname TradeLocker gives your brand. Same contract everywhere.
+- Development hosts: `https://brand-socket-api-dev-1.tradelocker.com` (direct, use this) and
+  `https://api-dev.tradelocker.com` (shared edge). Production: the dedicated hostname TradeLocker gives
+  your brand, or `https://api.tradelocker.com` (shared edge). Same contract everywhere, but not the
+  same throughput: measured from one machine with the reference clients, the development brand's
+  7,000-message snapshot arrived in 0.5 s through the direct host on every run and in anywhere from
+  0.6 s to 17 s through the shared edge, with the client idle and waiting on the socket. Use the direct
+  or dedicated hostname for anything that cares about snapshot latency.
 
 ## 8. Checklist for an agent reviewing an integration
 

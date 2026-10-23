@@ -3,3 +3,5 @@ examples/node/node_modules/
 examples/node/package-lock.json
 examples/java/target/
 examples/python/__pycache__/
+examples/.env
+examples/python/.venv/

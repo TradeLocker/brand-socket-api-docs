@@ -50,16 +50,32 @@ integrations, and a ten-point review checklist. The contract it refers to is
 ## Examples
 
 Reference clients that follow every rule in `AGENTS.md`: connect, keep state from the snapshot,
-reconnect correctly, subscribe to quotes with acknowledgements.
+reconnect correctly, subscribe to quotes with acknowledgements. One script runs any of them and
+installs what it needs on first use:
 
-| Language | Library | Run |
+```bash
+export BRAND_API_KEY=...            # or put BRAND_API_KEY=... in examples/.env (git-ignored)
+examples/run.sh node 30             # Node.js, exit after 30 s
+examples/run.sh python              # Python (asyncio), run until Ctrl-C
+INSTRUMENTS=EURUSD examples/run.sh java 60
+```
+
+| Language | Library | Entry point |
 |---|---|---|
-| [Node.js](examples/node) | `socket.io-client` 4.x | `cd examples/node && npm install && BRAND_API_KEY=… node brand-socket.mjs` |
-| [Python](examples/python) | `python-socketio` 5.x (asyncio) | `cd examples/python && pip install -r requirements.txt && BRAND_API_KEY=… python brand_socket.py` |
-| [Java](examples/java) | `io.socket:socket.io-client` 2.x | `cd examples/java && BRAND_API_KEY=… mvn -q compile exec:java` |
+| [Node.js](examples/node) | `socket.io-client` 4.x | `examples/node/brand-socket.mjs` |
+| [Python](examples/python) | `python-socketio` 5.x (asyncio) | `examples/python/brand_socket.py` |
+| [Java](examples/java) | `io.socket:socket.io-client` 2.x, Maven | `examples/java/.../BrandSocketClient.java` |
 
-All three take `BRAND_SOCKET_URL` (default production), `ACCOUNT_TYPE` (`LIVE`) and `INSTRUMENTS`
-(comma-separated, for quotes).
+The **direct development host is the default** (`https://brand-socket-api-dev-1.tradelocker.com`);
+set `BRAND_SOCKET_URL` to the dedicated hostname TradeLocker gave your brand, or
+`https://api.tradelocker.com`, for production. Prefer the direct or dedicated hostname over the
+shared `api-dev`/`api` edge: measured from the same machine, a 7,000-message snapshot took 0.5 s on
+the direct host every time and anywhere between 0.6 s and 17 s through the shared edge. Other knobs: `ACCOUNT_TYPE`
+(`LIVE`, default, or `DEMO`), `INSTRUMENTS` (comma-separated, for quotes), `RUN_SECONDS` (exit
+after that long with a summary; default runs until Ctrl-C). A 30 s run against development with a
+brand key prints `connection … connected`, the quote acknowledgement (`notImplemented` where the
+environment has no quote feed) and `SyncEnd: <accounts> accounts, <positions> positions, <orders>
+open orders`.
 
 ## Before you write code
 

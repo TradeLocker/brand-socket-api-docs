@@ -1,6 +1,8 @@
 """Reference Brand Socket client for Python (python-socketio 5.x, asyncio).
 
-    BRAND_API_KEY=... BRAND_SOCKET_URL=https://api-dev.tradelocker.com ACCOUNT_TYPE=LIVE python brand_socket.py
+    BRAND_API_KEY=... python brand_socket.py                      # development host by default
+    BRAND_SOCKET_URL=https://api.tradelocker.com ...              # production
+    RUN_SECONDS=30 INSTRUMENTS=EURUSD ...                         # exit after 30 s; subscribe to quotes
 
 The rules it follows are the ones integrations break most often: one process per API key and
 account type (a `disconnected` status means another consumer took the key, so this process stops);
@@ -12,14 +14,16 @@ import asyncio
 import os
 import random
 import re
+import time
 from decimal import Decimal
 
 import socketio
 
-URL = os.environ.get("BRAND_SOCKET_URL", "https://api.tradelocker.com")
+URL = os.environ.get("BRAND_SOCKET_URL", "https://brand-socket-api-dev-1.tradelocker.com")  # development (direct host); production: your dedicated hostname or https://api.tradelocker.com
 KEY = os.environ["BRAND_API_KEY"]
 TYPE = os.environ.get("ACCOUNT_TYPE", "LIVE")
 INSTRUMENTS = [i for i in os.environ.get("INSTRUMENTS", "").split(",") if i]
+RUN_SECONDS = float(os.environ.get("RUN_SECONDS", "0"))  # 0: run until killed
 NAMESPACE = "/brand-socket"
 
 RETRYABLE_HANDSHAKE = re.compile(r"^(conflict|internalServer|unknown)")
@@ -31,6 +35,7 @@ class State:
         self.positions: dict[str, dict] = {}
         self.orders: dict[str, dict] = {}
         self.synced = False
+        self.connected_at = 0.0
 
     def apply(self, message: dict) -> None:
         kind = message.get("type")
@@ -50,7 +55,8 @@ class State:
                 self.orders[message["orderId"]] = message
         elif kind == "Property" and message.get("name") == "SyncEnd":
             self.synced = True
-            print(f"SyncEnd: {len(self.accounts)} accounts, {len(self.positions)} positions, {len(self.orders)} open orders")
+            seconds = time.monotonic() - self.connected_at
+            print(f"SyncEnd after {seconds:.1f} s: {len(self.accounts)} accounts, {len(self.positions)} positions, {len(self.orders)} open orders")
         # Unknown types are ignored on purpose: new ones can appear.
 
 
@@ -62,6 +68,7 @@ def equity(status: dict) -> Decimal | None:
 
 async def main() -> None:
     attempt = 0
+    deadline = time.monotonic() + RUN_SECONDS if RUN_SECONDS > 0 else None
     while True:
         state = State()
         stop = asyncio.Event()
@@ -75,6 +82,7 @@ async def main() -> None:
             code = status.get("code", "")
             if code == "connected":
                 attempt = 0
+                state.connected_at = time.monotonic()
                 for instrument in INSTRUMENTS:
                     ack = await sio.call("subscriptions", {"action": "SUBSCRIBE", "instrument": instrument}, namespace=NAMESPACE, timeout=30)
                     print("subscribe", ack)
@@ -88,8 +96,11 @@ async def main() -> None:
                 print("replaced or closed by the server; not reconnecting")
                 stop.set()
 
+        # A plain function, not a coroutine: python-socketio calls it inline, which is several
+        # times faster per message than scheduling a coroutine. The snapshot of a large brand is
+        # thousands of messages in a second or two, so this matters.
         @sio.on("stream", namespace=NAMESPACE)
-        async def on_stream(message):
+        def on_stream(message):
             state.apply(message)
 
         @sio.on("subscriptions", namespace=NAMESPACE)
@@ -115,8 +126,15 @@ async def main() -> None:
             print("connect error", error)
             reconnect.set()
 
-        await asyncio.wait([asyncio.create_task(stop.wait()), asyncio.create_task(reconnect.wait())], return_when=asyncio.FIRST_COMPLETED)
-        await sio.disconnect()
+        waits = [asyncio.create_task(stop.wait()), asyncio.create_task(reconnect.wait())]
+        timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+        done, pending = await asyncio.wait(waits, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        await sio.disconnect()  # closes the transport cleanly, also on the deadline
+        if not done:
+            print(f"done after {RUN_SECONDS:g} s: {len(state.accounts)} accounts, {len(state.positions)} positions, {len(state.orders)} open orders, synced={state.synced}")
+            return
         if stop.is_set():
             return
         attempt += 1

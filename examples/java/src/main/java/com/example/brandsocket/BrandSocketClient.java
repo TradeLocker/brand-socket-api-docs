@@ -21,7 +21,13 @@ import org.json.JSONObject;
  * Reference Brand Socket client for the JVM (io.socket:socket.io-client 2.x).
  *
  * <pre>
- * BRAND_API_KEY=... BRAND_SOCKET_URL=https://api-dev.tradelocker.com ACCOUNT_TYPE=LIVE mvn -q compile exec:java
+ * mvn -q compile dependency:build-classpath -Dmdep.outputFile=target/cp.txt
+ * BRAND_API_KEY=... java -cp "target/classes:$(cat target/cp.txt)" com.example.brandsocket.BrandSocketClient
+ *                                                                  # development host by default
+ * BRAND_SOCKET_URL=https://api.tradelocker.com ...                 # production
+ * RUN_SECONDS=30 INSTRUMENTS=EURUSD VERBOSE=1 ...                  # exit after 30 s; quotes; progress every 1000 messages
+ * (`../run.sh java` does all of this. Run it as a plain JVM, not through `mvn exec:java`: in-process
+ * under Maven the snapshot took up to 20x longer from run to run.)
  * </pre>
  *
  * The rules it follows are the ones integrations break most often: one process per API key and
@@ -36,7 +42,8 @@ public final class BrandSocketClient {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Pattern RETRYABLE_HANDSHAKE = Pattern.compile("^(conflict|internalServer|unknown)");
 
-    private final String url = System.getenv().getOrDefault("BRAND_SOCKET_URL", "https://api.tradelocker.com");
+    // Development (direct host) by default; production: your dedicated hostname or https://api.tradelocker.com.
+    private final String url = System.getenv().getOrDefault("BRAND_SOCKET_URL", "https://brand-socket-api-dev-1.tradelocker.com");
     private final String key = System.getenv("BRAND_API_KEY");
     private final String type = System.getenv().getOrDefault("ACCOUNT_TYPE", "LIVE");
     private final List<String> instruments =
@@ -47,6 +54,9 @@ public final class BrandSocketClient {
     private final Map<String, JsonNode> positions = new ConcurrentHashMap<>();
     private final Map<String, JsonNode> orders = new ConcurrentHashMap<>();
     private volatile boolean synced;
+    private volatile long connectedAtMillis;
+    private final AtomicInteger received = new AtomicInteger();
+    private static final boolean VERBOSE = "1".equals(System.getenv("VERBOSE"));
 
     private final AtomicInteger attempt = new AtomicInteger();
     private final AtomicBoolean stopped = new AtomicBoolean();
@@ -58,6 +68,13 @@ public final class BrandSocketClient {
             System.exit(2);
         }
         client.connect();
+        long runSeconds = Long.parseLong(System.getenv().getOrDefault("RUN_SECONDS", "0")); // 0: run until killed
+        if (runSeconds > 0) {
+            Thread.sleep(runSeconds * 1000);
+            System.out.printf("done after %d s: %d accounts, %d positions, %d open orders, synced=%s%n",
+                    runSeconds, client.accounts.size(), client.positions.size(), client.orders.size(), client.synced);
+            System.exit(0);
+        }
         Thread.currentThread().join();
     }
 
@@ -84,6 +101,7 @@ public final class BrandSocketClient {
             String code = status.path("code").asText("");
             if (code.equals("connected")) {
                 attempt.set(0);
+                connectedAtMillis = System.currentTimeMillis();
                 for (String instrument : instruments) {
                     JSONObject request = new JSONObject(Map.of("action", "SUBSCRIBE", "instrument", instrument));
                     // The ack answers every request; one sent before SyncEnd is answered after it.
@@ -135,6 +153,10 @@ public final class BrandSocketClient {
     }
 
     private void apply(JsonNode message) {
+        int n = received.incrementAndGet();
+        if (VERBOSE && n % 1000 == 0) {
+            System.out.printf("… %d messages after %.1f s%n", n, (System.currentTimeMillis() - connectedAtMillis) / 1000.0);
+        }
         switch (message.path("type").asText("")) {
             case "AccountStatus" -> {
                 // Partial update: keep the fields the server did not resend.
@@ -153,7 +175,8 @@ public final class BrandSocketClient {
             case "Property" -> {
                 if (message.path("name").asText().equals("SyncEnd")) {
                     synced = true;
-                    System.out.printf("SyncEnd: %d accounts, %d positions, %d open orders%n", accounts.size(), positions.size(), orders.size());
+                    System.out.printf("SyncEnd after %.1f s: %d accounts, %d positions, %d open orders%n",
+                            (System.currentTimeMillis() - connectedAtMillis) / 1000.0, accounts.size(), positions.size(), orders.size());
                 }
             }
             default -> {

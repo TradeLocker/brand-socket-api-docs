@@ -1,6 +1,8 @@
 // Reference Brand Socket client for Node.js (socket.io-client 4.x).
 //
-//   BRAND_API_KEY=... BRAND_SOCKET_URL=https://api-dev.tradelocker.com ACCOUNT_TYPE=LIVE node brand-socket.mjs
+//   BRAND_API_KEY=... node brand-socket.mjs                      # development host by default
+//   BRAND_SOCKET_URL=https://api.tradelocker.com ...             # production
+//   RUN_SECONDS=30 INSTRUMENTS=EURUSD ...                        # exit after 30 s; subscribe to quotes
 //
 // What it gets right, in the order integrations usually get it wrong:
 //   1. one process per API key and account type; a `disconnected` status means another consumer
@@ -12,14 +14,15 @@
 //   5. quote subscriptions with an acknowledgement callback, sent after `connected`.
 import { io } from "socket.io-client";
 
-const URL = process.env.BRAND_SOCKET_URL ?? "https://api.tradelocker.com";
+const URL = process.env.BRAND_SOCKET_URL ?? "https://brand-socket-api-dev-1.tradelocker.com"; // development (direct host); production: your dedicated hostname or https://api.tradelocker.com
 const KEY = process.env.BRAND_API_KEY;
 const TYPE = process.env.ACCOUNT_TYPE ?? "LIVE";
 const INSTRUMENTS = (process.env.INSTRUMENTS ?? "").split(",").filter(Boolean); // e.g. EURUSD,XAUUSD
 if (!KEY) { console.error("BRAND_API_KEY is required"); process.exit(2); }
+const RUN_SECONDS = Number(process.env.RUN_SECONDS ?? 0); // 0: run until killed
 
 // State: everything keyed by account, rebuilt from every snapshot.
-const state = { accounts: new Map(), positions: new Map(), orders: new Map(), synced: false };
+const state = { accounts: new Map(), positions: new Map(), orders: new Map(), synced: false, connectedAt: 0 };
 
 function applyStream(message) {
   switch (message.type) {
@@ -43,7 +46,8 @@ function applyStream(message) {
     case "Property":
       if (message.name === "SyncEnd") {
         state.synced = true;
-        console.log(`SyncEnd: ${state.accounts.size} accounts, ${state.positions.size} positions, ${state.orders.size} open orders`);
+        const seconds = ((Date.now() - state.connectedAt) / 1000).toFixed(1);
+        console.log(`SyncEnd after ${seconds} s: ${state.accounts.size} accounts, ${state.positions.size} positions, ${state.orders.size} open orders`);
       }
       break;
     default:
@@ -72,6 +76,7 @@ function connect() {
     console.log("connection", JSON.stringify(status));
     if (status.code === "connected") {
       attempt = 0;
+      state.connectedAt = Date.now();
       for (const instrument of INSTRUMENTS) {
         // The ack answers every request; a request sent before SyncEnd is answered after it.
         socket.emit("subscriptions", { action: "SUBSCRIBE", instrument }, (ack) => console.log("subscribe", JSON.stringify(ack)));
@@ -114,3 +119,9 @@ function connect() {
 }
 
 connect();
+if (RUN_SECONDS > 0) {
+  setTimeout(() => {
+    console.log(`done after ${RUN_SECONDS} s: ${state.accounts.size} accounts, ${state.positions.size} positions, ${state.orders.size} open orders, synced=${state.synced}`);
+    process.exit(0);
+  }, RUN_SECONDS * 1000).unref?.();
+}
