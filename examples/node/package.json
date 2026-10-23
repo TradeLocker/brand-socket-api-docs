@@ -1,0 +1,8 @@
+{
+  "name": "brand-socket-example",
+  "private": true,
+  "type": "module",
+  "description": "Reference Brand Socket client: connect, keep state from the snapshot, reconnect correctly, subscribe to quotes",
+  "scripts": { "start": "node brand-socket.mjs" },
+  "dependencies": { "socket.io-client": "^4.8.1" }
+}

@@ -15,7 +15,7 @@
   "info": {
     "title": "TradeLocker Brand Socket API",
     "version": "1.3.0",
-    "description": "Real-time updates for every account of your brand over [Socket.IO](https://socket.io/):\naccount status (balance, equity, margin, per-position PnL), positions, closed positions and\norders, plus instrument quotes on request.\n\nOne connection carries all accounts of your brand for one account type (`LIVE` or `DEMO`).\nYou authenticate with your **brand API key**; there is nothing to subscribe per account.\n\n## Quick start\n\n1. **Connect.** Socket.IO v4 client, namespace `/brand-socket`, path `/brand-api/socket.io`,\n   transport `websocket`, header `brand-api-key: <your key>`, query `type=LIVE` or `type=DEMO`.\n2. **Wait for `connection`** with `{\"status\":\"ok\",\"code\":\"connected\"}`. Any `status: error`\n   means the handshake was refused and the server closes the socket (see the `connection` channel).\n3. **Read the `stream` event.** You first get a snapshot of every account (`AccountStatus`,\n   `Position`, `OpenOrder`), then `Property` `SyncEnd`, then live updates.\n4. **Quotes (optional).** Emit `subscriptions` with `{\"action\":\"SUBSCRIBE\",\"instrument\":\"EURUSD\"}`;\n   quotes arrive on the `subscriptions` event.\n\n```js\nimport { io } from 'socket.io-client';\n\nconst socket = io('https://api.tradelocker.com/brand-socket', {\n  path: '/brand-api/socket.io',\n  transports: ['websocket'],\n  query: { type: 'LIVE' },\n  extraHeaders: { 'brand-api-key': process.env.BRAND_API_KEY },\n});\n\nsocket.on('connection', (status) => console.log('connection', status)); // {status, code, message}\nsocket.on('stream', (message) => console.log('stream', message));       // {type, ...}\nsocket.on('subscriptions', (quote) => console.log('quote', quote));     // {type: 'Quote', ...}\nsocket.on('disconnect', (reason) => console.log('disconnect', reason));\n```\n\n`extraHeaders` is honoured by Socket.IO clients for Node.js, Python, Java and .NET. Browsers\ncannot set headers on a WebSocket, so connect from your backend.\n\n## Connection settings\n\n| Setting | Value |\n|---|---|\n| Protocol | Socket.IO v4 (Engine.IO 4) |\n| Namespace | `/brand-socket` |\n| Handshake path | `/brand-api/socket.io` |\n| Transport | `websocket` only (no HTTP long-polling) |\n| Auth | header `brand-api-key` on the handshake; the key's scope must be `FULL_ACCESS` or `SOCKET` |\n| Account type | query parameter `type`: `LIVE` or `DEMO` |\n| Server ping | every 25 s, connection closed after 20 s without a pong |\n\n## Rules that save you a support ticket\n\n- **One connection per API key.** A new connection with the same key can replace the old one,\n  which then receives `disconnected` (\"Replaced by new connection with the same API key.\").\n  This holds across account types: a `LIVE` and a `DEMO` connection with the same key compete,\n  so use a separate API key for each type you stream. Never share a key between processes.\n- **Connect with a `type` your brand has.** A brand is set up for `LIVE`, `DEMO` or both.\n  Connecting with a type it does not have is refused with `badRequest`.\n- **Back off.** At most 10 connection attempts per 2 minutes per brand and type; above that the\n  handshake is refused with `conflict.<environment>-<type>-<brand>`. Do not reconnect in a tight\n  loop on any error code.\n- **Reconnect after a server-side close.** Socket.IO clients retry on their own after network\n  errors and ping timeouts, but not when the server closed the connection (`io server disconnect`).\n  On `shutdown` (a deploy) and `connectionError` (the trading session ended), reconnect yourself\n  with a short delay. On the handshake errors (`badRequest*`, `forbidden*`, `unauthorized*`),\n  fix the cause before trying again.\n- **Every connection starts with a full snapshot.** After a reconnect, rebuild your state from the\n  new snapshot up to `SyncEnd` instead of merging it into the old one.\n- **Numbers are decimal strings** (`\"10628.95\"`). Parse them with a decimal type, not a float.\n  IDs are strings too: position and order IDs exceed 2^53.\n- **Fields with no value are omitted**, not sent as `null`. An `AccountStatus` update can omit\n  figures it does not carry: keep the last value you received for that account.\n- **Ignore message types and fields you do not know.** New ones can be added without notice.\n",
+    "description": "Real-time updates for every account of your brand over [Socket.IO](https://socket.io/):\naccount status (balance, equity, margin, per-position PnL), positions, closed positions and\norders, plus instrument quotes on request.\n\nOne connection carries all accounts of your brand for one account type (`LIVE` or `DEMO`).\nYou authenticate with your **brand API key**; there is nothing to subscribe per account.\n\n## Quick start\n\n1. **Connect.** Socket.IO v4 client, namespace `/brand-socket`, path `/brand-api/socket.io`,\n   transport `websocket`, header `brand-api-key: <your key>`, query `type=LIVE` or `type=DEMO`.\n2. **Wait for `connection`** with `{\"status\":\"ok\",\"code\":\"connected\"}`. Any `status: error`\n   means the handshake was refused and the server closes the socket (see the `connection` channel).\n3. **Read the `stream` event.** You first get a snapshot of every account (`AccountStatus`,\n   `Position`, `OpenOrder`), then `Property` `SyncEnd`, then live updates.\n4. **Quotes (optional).** Emit `subscriptions` with `{\"action\":\"SUBSCRIBE\",\"instrument\":\"EURUSD\"}`\n   **and an acknowledgement callback**, which receives the result; quotes arrive on the\n   `subscriptions` event.\n\n```js\nimport { io } from 'socket.io-client';\n\nconst socket = io('https://api.tradelocker.com/brand-socket', {\n  path: '/brand-api/socket.io',\n  transports: ['websocket'],\n  query: { type: 'LIVE' },\n  extraHeaders: { 'brand-api-key': process.env.BRAND_API_KEY },\n});\n\nsocket.on('connection', (status) => console.log('connection', status)); // {status, code, message}\nsocket.on('stream', (message) => console.log('stream', message));       // {type, ...}\nsocket.on('subscriptions', (quote) => console.log('quote', quote));     // {type: 'Quote', ...}\nsocket.on('disconnect', (reason) => console.log('disconnect', reason));\n\nsocket.emit('subscriptions', { action: 'SUBSCRIBE', instrument: 'EURUSD' }, (ack) => {\n  console.log('subscribe', ack); // {status: 'ok', code: 'subscribed', instrument: 'EURUSD', ...}\n});\n```\n\n`extraHeaders` is honoured by Socket.IO clients for Node.js, Python, Java and .NET. Browsers\ncannot set headers on a WebSocket, so connect from your backend.\n\n## AI-agent ready\n\nThis contract and its companion repository are written to be read by coding agents. Point\nyour agent (Claude Code, Codex, Cursor, Copilot…) at\n[github.com/TradeLocker/brand-socket-api-docs](https://github.com/TradeLocker/brand-socket-api-docs)\nand ask it to **build or check your integration against `AGENTS.md`**: it holds the rules the\nserver enforces, the reconnect decision table, every edge case seen in live integrations and a\nreview checklist. Reference clients in\n[Node.js, Python and Java](https://github.com/TradeLocker/brand-socket-api-docs/tree/main/examples)\nfollow every rule in it.\n\n## Connection settings\n\n| Setting | Value |\n|---|---|\n| Protocol | Socket.IO v4 (Engine.IO 4) |\n| Namespace | `/brand-socket` |\n| Handshake path | `/brand-api/socket.io` |\n| Transport | `websocket` only (no HTTP long-polling) |\n| Auth | header `brand-api-key` on the handshake; the key's scope must be `FULL_ACCESS` or `SOCKET` |\n| Account type | query parameter `type`: `LIVE` or `DEMO` |\n| Server ping | every 25 s, connection closed after 20 s without a pong |\n\n## Rules that save you a support ticket\n\n- **One connection per API key and type.** A `LIVE` and a `DEMO` connection with the same key\n  run side by side. A second connection with the same key and type can replace the first,\n  which then receives `disconnected` (\"Replaced by new connection with the same API key.\").\n  Never share a key between processes.\n- **Connect with a `type` your brand has.** A brand is set up for `LIVE`, `DEMO` or both.\n  Connecting with a type it does not have is refused with `badRequest`.\n- **Back off.** At most 10 connection attempts per 2 minutes per brand and type; above that the\n  handshake is refused with `conflict.<environment>-<type>-<brand>`. Do not reconnect in a tight\n  loop on any error code.\n- **Reconnect after a server-side close.** Socket.IO clients retry on their own after network\n  errors and ping timeouts, but not when the server closed the connection (`io server disconnect`).\n  On `shutdown` (a deploy) and `connectionError` (the trading session ended), reconnect yourself\n  with a short delay. On the handshake errors (`badRequest*`, `forbidden*`, `unauthorized*`),\n  fix the cause before trying again.\n- **Every connection starts with a full snapshot.** After a reconnect, rebuild your state from the\n  new snapshot up to `SyncEnd` instead of merging it into the old one.\n- **Numbers are decimal strings** (`\"10628.95\"`). Parse them with a decimal type, not a float.\n  IDs are strings too: position and order IDs exceed 2^53.\n- **Fields with no value are omitted**, not sent as `null`. An `AccountStatus` update can omit\n  figures it does not carry: keep the last value you received for that account.\n- **Ignore message types and fields you do not know.** New ones can be added without notice.\n",
     "contact": {
       "name": "TradeLocker Brand Socket docs",
       "url": "https://github.com/TradeLocker/brand-socket-api-docs"
@@ -92,7 +92,7 @@
       "address": "connection",
       "title": "connection",
       "summary": "Handshake result and connection-level status.",
-      "description": "Socket.IO event `connection`, sent by the server. Every payload is\n`{\"status\":\"ok\"|\"error\",\"code\":\"...\",\"message\":\"...\"}`; branch on `code`, show `message`.\n\n**After the handshake**\n\n| status | code | Meaning | What to do |\n|---|---|---|---|\n| ok | `connected` | Key accepted, the snapshot follows on `stream`. | |\n| error | `badRequest.invalidAccountType` | `type` is missing or not `LIVE`/`DEMO`. | Fix the query. |\n| error | `badRequest.invalidApiKey` | The `brand-api-key` header is missing or empty. | Send the header. |\n| error | `forbidden.brand-not-found` | No brand has this API key. | Check the key and the environment (development keys do not work in production). |\n| error | `forbidden.brandToken.cannotEstablishConnectionUsingRestrictedApiKey` | The key's scope does not allow the socket. | Use a key with scope `FULL_ACCESS` or `SOCKET`. |\n| error | `unauthorized.brandSocketDisabled` | The Brand Socket is not enabled for your brand, or the brand is not active. | Ask TradeLocker to enable it. |\n| error | `badRequest` | Your brand has no setup for this `type`. | Connect with the other type, or ask TradeLocker. |\n| error | `conflict.<environment>-<type>-<brand>` | Too many connection attempts (10 per 2 minutes). | Wait, then reconnect with backoff. |\n| error | `internalServer.pfix_conn_fail_<brand>_<type>` | The trading session for your brand could not be opened. | Retry with backoff; contact TradeLocker if it persists. |\n| error | `internalServer.externalHttpRequest.failed.<httpStatus>` | An internal service answered with an error. | Retry with backoff. |\n| error | `unknown` | Unexpected server error. | Retry with backoff. |\n\nOn every handshake error the server closes the socket.\n\n**During the connection**\n\n| status | code | Meaning | What to do |\n|---|---|---|---|\n| ok | `disconnected` | Replaced by a newer connection with the same API key, or closed by TradeLocker. | Do not reconnect automatically: another consumer is using your key. |\n| ok | `shutdown` | The service is restarting (deploy). | Reconnect after a short delay. |\n| error | `connectionError` | The trading session behind the socket ended. | Reconnect with backoff. |\n\n**In reply to `subscriptions`** (the socket stays connected)\n\n| status | code | Meaning |\n|---|---|---|\n| error | `validation.badRequest` | The payload is invalid; `message` lists every problem. |\n| error | `notFound` | No such instrument for your brand. |\n| error | `notImplemented` | Quotes are not available in your brand's environment. |\n| error | `unknown` | Unexpected error handling the request. |\n",
+      "description": "Socket.IO event `connection`, sent by the server. Every payload is\n`{\"status\":\"ok\"|\"error\",\"code\":\"...\",\"message\":\"...\"}`; branch on `code`, show `message`.\n\n**After the handshake**\n\n| status | code | Meaning | What to do |\n|---|---|---|---|\n| ok | `connected` | Key accepted, the snapshot follows on `stream`. | |\n| error | `badRequest.invalidAccountType` | `type` is missing or not `LIVE`/`DEMO`. | Fix the query. |\n| error | `badRequest.invalidApiKey` | The `brand-api-key` header is missing or empty. | Send the header. |\n| error | `forbidden.brand-not-found` | No brand has this API key. | Check the key and the environment (development keys do not work in production). |\n| error | `forbidden.brandToken.cannotEstablishConnectionUsingRestrictedApiKey` | The key's scope does not allow the socket. | Use a key with scope `FULL_ACCESS` or `SOCKET`. |\n| error | `unauthorized.brandSocketDisabled` | The Brand Socket is not enabled for your brand, or the brand is not active. | Ask TradeLocker to enable it. |\n| error | `badRequest` | Your brand has no setup for this `type`. | Connect with the other type, or ask TradeLocker. |\n| error | `conflict.<environment>-<type>-<brand>` | Too many connection attempts (10 per 2 minutes). | Wait, then reconnect with backoff. |\n| error | `internalServer.pfix_conn_fail_<brand>_<type>` | The trading session for your brand could not be opened. | Retry with backoff; contact TradeLocker if it persists. |\n| error | `internalServer.externalHttpRequest.failed.<httpStatus>` | An internal service answered with an error. | Retry with backoff. |\n| error | `unknown` | Unexpected server error. | Retry with backoff. |\n\nOn every handshake error the server closes the socket.\n\n**During the connection**\n\n| status | code | Meaning | What to do |\n|---|---|---|---|\n| ok | `disconnected` | Replaced by a newer connection with the same API key, or closed by TradeLocker. | Do not reconnect automatically: another consumer is using your key. |\n| ok | `shutdown` | The service is restarting (deploy). | Reconnect after a short delay. |\n| error | `connectionError` | The trading session behind the socket ended. | Reconnect with backoff. |\n\n**In reply to `subscriptions` sent without an acknowledgement callback** (the socket stays\nconnected). With a callback the same codes come back through it instead, together with\n`subscribed` / `unsubscribed` on success: see `SubscriptionAck`.\n\n| status | code | Meaning |\n|---|---|---|\n| error | `validation.badRequest` | The payload is invalid; `message` lists every problem. |\n| error | `notFound` | No such instrument for your brand. |\n| error | `notImplemented` | Quotes are not available in your brand's environment. |\n| error | `unknown` | Unexpected error handling the request. |\n",
       "servers": [
         {
           "$ref": "#/servers/production"
@@ -182,7 +182,7 @@
       "address": "subscriptions",
       "title": "subscriptions",
       "summary": "Quote subscriptions (client to server) and quotes (server to client).",
-      "description": "Socket.IO event `subscriptions`, used in both directions:\n\n- **you emit** `{\"action\":\"SUBSCRIBE\"|\"UNSUBSCRIBE\",\"instrument\":\"<name>\"}`, no acknowledgement\n  callback. Success is silent; a failure arrives on the `connection` event and the socket stays\n  connected. A request sent before `SyncEnd` is answered once the snapshot is complete.\n- **the server emits** a `Quote` for every price change of each subscribed instrument.\n",
+      "description": "Socket.IO event `subscriptions`, used in both directions:\n\n- **you emit** `{\"action\":\"SUBSCRIBE\"|\"UNSUBSCRIBE\",\"instrument\":\"<name>\"}`, preferably with an\n  acknowledgement callback. The callback receives a `SubscriptionAck` for every request,\n  success included. Without a callback, success is silent and a failure arrives on the\n  `connection` event. Either way the socket stays connected. A request sent before `SyncEnd`\n  is answered once the snapshot is complete.\n- **the server emits** a `Quote` for every price change of each subscribed instrument.\n",
       "servers": [
         {
           "$ref": "#/servers/production"
@@ -203,6 +203,27 @@
         },
         "Quote": {
           "$ref": "#/components/messages/Quote"
+        }
+      }
+    },
+    "subscriptionsAck": {
+      "address": null,
+      "title": "subscriptions acknowledgement",
+      "summary": "Socket.IO acknowledgement of a `subscriptions` event sent with a callback.",
+      "servers": [
+        {
+          "$ref": "#/servers/production"
+        },
+        {
+          "$ref": "#/servers/development"
+        },
+        {
+          "$ref": "#/servers/development-direct"
+        }
+      ],
+      "messages": {
+        "SubscriptionAck": {
+          "$ref": "#/components/messages/SubscriptionAck"
         }
       }
     }
@@ -235,8 +256,8 @@
     "subscribeQuotes": {
       "action": "send",
       "title": "Subscribe or unsubscribe instrument quotes",
-      "summary": "Emit `subscriptions`; failures come back on `connection`.",
-      "description": "The payload takes exactly `action` and `instrument`. Any other property, an unknown action\nor a missing instrument is answered with `validation.badRequest`, whose `message` joins every\nproblem with commas, for example\n`property foo should not exist,instrument must be a string`.\n",
+      "summary": "Emit `subscriptions` with an acknowledgement callback.",
+      "description": "The payload takes exactly `action` and `instrument`. Any other property, an unknown action\nor a missing instrument is answered with `validation.badRequest`, whose `message` joins every\nproblem with commas, for example\n`property foo should not exist,instrument must be a string`.\n\nWith a callback, every request is answered through it (`SubscriptionAck`). Without one, only\nfailures are answered, on the `connection` event.\n",
       "channel": {
         "$ref": "#/channels/subscriptions"
       },
@@ -248,6 +269,16 @@
           "$ref": "#/channels/subscriptions/messages/UnsubscribeQuotes"
         }
       ],
+      "reply": {
+        "channel": {
+          "$ref": "#/channels/subscriptionsAck"
+        },
+        "messages": [
+          {
+            "$ref": "#/channels/subscriptionsAck/messages/SubscriptionAck"
+          }
+        ]
+      },
       "tags": [
         {
           "name": "brand-socket"
@@ -571,6 +602,51 @@
             "payload": {
               "action": "UNSUBSCRIBE",
               "instrument": "EURUSD"
+            }
+          }
+        ]
+      },
+      "SubscriptionAck": {
+        "name": "SubscriptionAck",
+        "title": "Subscription acknowledgement",
+        "summary": "Result of one `subscriptions` request, passed to its acknowledgement callback.",
+        "payload": {
+          "$ref": "#/components/schemas/SubscriptionAck"
+        },
+        "examples": [
+          {
+            "name": "subscribed",
+            "payload": {
+              "status": "ok",
+              "code": "subscribed",
+              "message": "Subscribed to EURUSD.",
+              "instrument": "EURUSD"
+            }
+          },
+          {
+            "name": "unsubscribed",
+            "payload": {
+              "status": "ok",
+              "code": "unsubscribed",
+              "message": "Unsubscribed from EURUSD.",
+              "instrument": "EURUSD"
+            }
+          },
+          {
+            "name": "notFound",
+            "payload": {
+              "status": "error",
+              "code": "notFound",
+              "message": "Instrument FOOBAR not found for brand ACME",
+              "instrument": "FOOBAR"
+            }
+          },
+          {
+            "name": "invalid",
+            "payload": {
+              "status": "error",
+              "code": "validation.badRequest",
+              "message": "instrument must be a string"
             }
           }
         ]
@@ -1118,6 +1194,38 @@
           "instrument": {
             "type": "string",
             "description": "Instrument name as your brand lists it.",
+            "examples": [
+              "EURUSD"
+            ]
+          }
+        }
+      },
+      "SubscriptionAck": {
+        "type": "object",
+        "required": [
+          "status",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "error"
+            ]
+          },
+          "code": {
+            "type": "string",
+            "description": "`subscribed` or `unsubscribed` on success; on failure one of `validation.badRequest`,\n`notFound`, `notImplemented`, `unknown` (see the `connection` channel).\n"
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable detail. Do not parse it."
+          },
+          "instrument": {
+            "type": "string",
+            "description": "The request's `instrument`; omitted when the request had no string instrument.",
             "examples": [
               "EURUSD"
             ]
